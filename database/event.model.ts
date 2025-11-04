@@ -95,6 +95,10 @@ const eventSchema = new Schema<IEvent>(
             type: String,
             required: [true, 'Time is required'],
             trim: true,
+            validate: {
+                validator: (value: string) => /^([01]\d|2[0-3]):([0-5]\d)$/.test(value),
+                message: 'Time must be in HH:mm 24-hour format',
+            },
         },
         mode: {
             type: String,
@@ -148,14 +152,47 @@ const eventSchema = new Schema<IEvent>(
 /**
  * Generate URL-friendly slug from title
  * Converts to lowercase, replaces spaces and special chars with hyphens
+ * Ensures uniqueness by appending a numeric suffix if needed
+ * Handles empty slugs by creating a fallback with timestamp
  */
-function generateSlug(title: string): string {
-    return title
+async function generateUniqueSlug(
+    title: string,
+    eventModel: Model<IEvent>,
+    excludeId?: string
+): Promise<string> {
+    let baseSlug = title
         .toLowerCase()
         .trim()
         .replace(/[^\w\s-]/g, '') // Remove special characters
         .replace(/[\s_-]+/g, '-') // Replace spaces and underscores with hyphens
         .replace(/^-+|-+$/g, ''); // Remove leading/trailing hyphens
+
+    // If slug is empty after sanitization, create a fallback with timestamp
+    if (!baseSlug) {
+        // Generate a URL-safe timestamp-based fallback
+        const timestamp = Date.now().toString(36); // Base36 encoding for shorter string
+        baseSlug = `untitled-${timestamp}`;
+    }
+
+    let slug = baseSlug;
+    let suffix = 1;
+
+    // Check for existing slugs, excluding current document if updating
+    while (true) {
+        const query: { slug: string; _id?: { $ne: string } } = { slug };
+        if (excludeId) {
+            query._id = { $ne: excludeId };
+        }
+
+        const exists = await eventModel.exists(query);
+        if (!exists) {
+            break;
+        }
+        slug = `${baseSlug}-${suffix}`;
+        suffix += 1;
+    }
+
+    return slug;
 }
 
 /**
@@ -176,40 +213,58 @@ function normalizeDate(dateString: string): string {
 }
 
 /**
- * Normalize time to consistent format (HH:MM or HH:MM:SS)
- * Removes extra whitespace and ensures consistent format
+ * Normalize time to consistent format (HH:mm)
+ * Pads hours to 2 digits and ensures consistent format
+ * Note: Consider using a dedicated date library (e.g., date-fns or dayjs) for more robust parsing
  */
 function normalizeTime(timeString: string): string {
     const trimmed = timeString.trim();
-    // Match time formats like HH:MM or HH:MM:SS
+    // Match time formats like H:MM, HH:MM, H:MM:SS, or HH:MM:SS
     const timeRegex = /^(\d{1,2}):(\d{2})(?::(\d{2}))?$/;
-    if (timeRegex.test(trimmed)) {
-        return trimmed;
+    const match = trimmed.match(timeRegex);
+
+    if (match) {
+        // Extract hours and minutes
+        const hours = match[1].padStart(2, '0'); // Pad to 2 digits
+        const minutes = match[2]; // Already 2 digits from regex
+        // Return in HH:mm format (drop seconds for consistency)
+        return `${hours}:${minutes}`;
     }
-    return trimmed; // Return as-is if doesn't match expected format
+
+    // If format doesn't match, return trimmed as fallback
+    // Validation will catch invalid formats if schema validation is enabled
+    return trimmed;
 }
 
 /**
  * Pre-save hook: Generate slug from title and normalize date/time
  * Only regenerates slug if title has changed
+ * Handles slug collisions by appending numeric suffixes
  */
-eventSchema.pre('save', function (next) {
-    // Generate slug only if title changed or slug doesn't exist
-    if (this.isModified('title') || !this.slug) {
-        this.slug = generateSlug(this.title);
-    }
+eventSchema.pre('save', async function (next) {
+    try {
+        // Generate unique slug only if title changed or slug doesn't exist
+        if (this.isModified('title') || !this.slug) {
+            const excludeId = this._id ? this._id.toString() : undefined;
+            // Get the Event model using this.model() which is available in document middleware
+            const EventModel = this.constructor as Model<IEvent>;
+            this.slug = await generateUniqueSlug(this.title, EventModel, excludeId);
+        }
 
-    // Normalize date to ISO format
-    if (this.isModified('date')) {
-        this.date = normalizeDate(this.date);
-    }
+        // Normalize date to ISO format
+        if (this.isModified('date')) {
+            this.date = normalizeDate(this.date);
+        }
 
-    // Normalize time format
-    if (this.isModified('time')) {
-        this.time = normalizeTime(this.time);
-    }
+        // Normalize time format (ensures HH:mm format)
+        if (this.isModified('time')) {
+            this.time = normalizeTime(this.time);
+        }
 
-    next();
+        next();
+    } catch (error) {
+        next(error instanceof Error ? error : new Error('Failed to generate unique slug'));
+    }
 });
 
 // Add unique index on slug for faster lookups

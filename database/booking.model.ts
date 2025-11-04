@@ -45,6 +45,10 @@ const bookingSchema = new Schema<IBooking>(
 /**
  * Pre-save hook: Validate that the referenced event exists
  * Throws an error if eventId doesn't correspond to an existing Event
+ * 
+ * Note: This validation adds a database query for every booking save.
+ * For better performance during bulk operations, consider moving this
+ * validation to the service or controller layer where bookings are created.
  */
 bookingSchema.pre('save', async function (next) {
     try {

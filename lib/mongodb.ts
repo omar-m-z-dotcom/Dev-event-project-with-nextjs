@@ -6,14 +6,25 @@ import mongoose, { Mongoose } from 'mongoose';
  * This variable stores the Mongoose connection instance to prevent
  * creating multiple connections during development when Next.js hot-reloads.
  * In production, this ensures we reuse the same connection across requests.
+ * 
+ * Uses globalThis to persist cache across hot reloads in development.
  */
-let cached: {
-    conn: Mongoose | null;
-    promise: Promise<Mongoose> | null;
-} = {
-    conn: null,
-    promise: null,
-};
+declare global {
+    // eslint-disable-next-line no-var
+    var _mongooseCache:
+        | {
+              conn: Mongoose | null;
+              promise: Promise<Mongoose> | null;
+          }
+        | undefined;
+}
+
+const cached =
+    globalThis._mongooseCache ??
+    (globalThis._mongooseCache = {
+        conn: null,
+        promise: null,
+    });
 
 /**
  * Establishes a connection to MongoDB using Mongoose
@@ -86,6 +97,8 @@ async function disconnectDB(): Promise<void> {
         await mongoose.disconnect();
         cached.conn = null;
         cached.promise = null;
+        // Clear global cache
+        globalThis._mongooseCache = undefined;
     }
 }
 
